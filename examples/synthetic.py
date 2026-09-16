@@ -39,6 +39,28 @@ def main() -> None:
             print(f"    t = {idx:4d}   p = {prob[idx]:.3f}")
 
 
+def multivariate_demo() -> None:
+    """Three correlated series sharing one changepoint at t = 150."""
+    from bcpd import detect_multivariate, trend_design
+
+    rng = np.random.default_rng(11)
+    n, d = 300, 3
+    shared = np.concatenate([np.zeros(150), np.full(150, 6.0)])
+    cov = 0.6 * np.eye(d) + 0.4 * np.ones((d, d))
+    Y = shared[:, None] + rng.multivariate_normal(np.zeros(d), cov, size=n)
+
+    res = detect_multivariate(
+        Y, trend_design(n), k_max=3, min_distance=60,
+        n_samples=500, rng=np.random.default_rng(5),
+    )
+    print("\nMultivariate, 3 correlated series:")
+    print("  posterior over changepoint count:", np.round(res.n_changepoints, 3))
+    top = np.argsort(res.location_prob)[::-1][:3]
+    for idx in sorted(top):
+        if res.location_prob[idx] > 0.01:
+            print(f"    t = {idx:4d}   p = {res.location_prob[idx]:.3f}")
+
+
 def harmonic_order_demo() -> None:
     """Posterior over harmonic order, the Chapter 6 future-work item."""
     from bcpd import PriorSpec, SegmentLikelihood, seasonal_design
@@ -64,3 +86,4 @@ def harmonic_order_demo() -> None:
 if __name__ == "__main__":
     main()
     harmonic_order_demo()
+    multivariate_demo()

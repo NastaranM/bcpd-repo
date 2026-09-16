@@ -6,11 +6,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .design import seasonal_design, trend_design
 from .marginal import PriorSpec, SegmentLikelihood
+from .multivariate import MultivariateSegmentLikelihood, MVPriorSpec
 from .recursion import ChangepointPosterior, forward_recursion, sample_changepoints
 
-__all__ = ["detect", "DetectionResult", "decompose"]
+__all__ = ["detect", "detect_multivariate", "DetectionResult"]
 
 
 @dataclass
@@ -70,79 +70,43 @@ def detect(
     return DetectionResult(posterior=post, segments=P, forward=F, likelihood=like)
 
 
-def decompose(
-    y: np.ndarray,
+def detect_multivariate(
+    Y: np.ndarray,
+    X: np.ndarray,
     *,
-    period: float = 96.0,
-    harmonic_order: int = 4,
     k_max: int = 4,
     min_distance: int = 96,
+    prior: MVPriorSpec | None = None,
+    nested_sizes: tuple[int, ...] | None = None,
     n_samples: int = 500,
     rng: np.random.Generator | None = None,
-) -> tuple[DetectionResult, DetectionResult, np.ndarray]:
-    """Two-stage pipeline: trend changepoints, detrend, then seasonal.
+) -> DetectionResult:
+    """Detect changepoints shared across d series.
 
-    This reproduces the thesis pipeline faithfully, including its known
-    approximation: Eq. (4.4) defines the model jointly over
-    ``X = [X_trend, X_seasonal]``, but inference runs the two components in
-    sequence rather than jointly.  Retained here as the reproduction baseline;
-    the joint formulation is the intended replacement.
+    Identical to ``detect`` apart from the segment likelihood: the recursion and
+    the backtrace are untouched, because shared changepoints leave the segment
+    structure exactly as it was.
 
-    Returns ``(trend_result, seasonal_result, detrended)``.
+    Parameters
+    ----------
+    Y : (N, d) array
+        The series, one column each.
+    X : (N, q) array
+        Shared design matrix; ``joint_design`` is the usual choice.
+    prior : MVPriorSpec, optional
+        Defaults to ``MVPriorSpec.vague_for(Y)``.
+    nested_sizes : tuple of int, optional
+        Nested design sizes to average over.  With ``joint_design``, pass
+        ``harmonic_nested_sizes(L_max)`` for a prior on the harmonic order.
     """
-    y = np.asarray(y, dtype=float).ravel()
-    n = len(y)
+    Y = np.asarray(Y, dtype=float)
+    if Y.ndim == 1:
+        Y = Y[:, None]
+    if prior is None:
+        prior = MVPriorSpec.vague_for(Y)
 
-    trend = detect(
-        y,
-        trend_design(n),
-        k_max=k_max,
-        min_distance=min_distance,
-        n_samples=n_samples,
-        rng=rng,
-    )
-
-    fitted = _fitted_values(y, trend, trend_design(n), min_distance)
-    detrended = y - fitted
-
-    seasonal = detect(
-        detrended,
-        seasonal_design(n, period, harmonic_order),
-        k_max=k_max,
-        min_distance=min_distance,
-        nested_sizes=tuple(2 * l for l in range(1, harmonic_order + 1)),
-        n_samples=n_samples,
-        rng=rng,
-    )
-    return trend, seasonal, detrended
-
-
-def _fitted_values(
-    y: np.ndarray, result: DetectionResult, X: np.ndarray, min_distance: int
-) -> np.ndarray:
-    """Posterior-mean fit implied by the modal changepoint configuration."""
-    n = len(y)
-    k = result.posterior.map_count()
-    if k == 0:
-        boundaries = [0, n]
-    else:
-        prob = result.location_prob.copy()
-        picked: list[int] = []
-        for _ in range(k):
-            idx = int(np.argmax(prob))
-            if prob[idx] <= 0:
-                break
-            picked.append(idx)
-            lo = max(0, idx - min_distance)
-            hi = min(n, idx + min_distance)
-            prob[lo:hi] = 0.0
-        boundaries = [0, *sorted(p + 1 for p in picked), n]
-
-    fitted = np.zeros(n)
-    for start, stop in zip(boundaries[:-1], boundaries[1:]):
-        if stop <= start:
-            continue
-        beta = result.likelihood.posterior_beta(start, stop)
-        q = len(beta)
-        fitted[start:stop] = X[start:stop, :q] @ beta
-    return fitted
+    like = MultivariateSegmentLikelihood(Y, X, prior, nested_sizes=nested_sizes)
+    P = like.segment_table(min_length=min_distance)
+    F = forward_recursion(P, k_max)
+    post = sample_changepoints(like, P, F, k_max, n_samples=n_samples, rng=rng)
+    return DetectionResult(posterior=post, segments=P, forward=F, likelihood=like)

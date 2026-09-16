@@ -44,19 +44,23 @@ print(result.location_prob)         # per-index posterior probability
 print(result.posterior.map_count())
 ```
 
-The two-stage trend-then-seasonal pipeline from the thesis:
+Trend and seasonal terms as one joint design, with a prior on the harmonic order:
 
 ```python
-from bcpd import decompose
+from bcpd import detect, joint_design, harmonic_nested_sizes
 
-trend, seasonal, detrended = decompose(y, period=96, harmonic_order=4)
+X = joint_design(len(y), period=96, harmonic_order=4)
+result = detect(y, X, nested_sizes=harmonic_nested_sizes(4))
+result.likelihood.posterior_size(start, stop)   # posterior over L = 0..4
 ```
 
-The seasonal stage places a uniform prior on the harmonic order rather than fixing
-L = 4, so each segment can use as many harmonics as the data support:
+Multiple series sharing changepoints:
 
 ```python
-seasonal.likelihood.posterior_size(start, stop)   # posterior over L = 1..4
+from bcpd import detect_multivariate, MVPriorSpec
+
+result = detect_multivariate(Y, X, prior=MVPriorSpec.vague_for(Y))
+result.likelihood.posterior_B(start, stop)      # q x d coefficients
 ```
 
 ## Layout
@@ -66,7 +70,8 @@ seasonal.likelihood.posterior_size(start, stop)   # posterior over L = 1..4
 | `src/bcpd/marginal.py` | Segment marginal likelihood, Eq. (4.38), corrected |
 | `src/bcpd/recursion.py` | Forward recursion (4.41) and stochastic backtrace (4.43)–(4.45) |
 | `src/bcpd/design.py` | Trend (4.2) and Fourier seasonal (4.3) design matrices |
-| `src/bcpd/detector.py` | High-level `detect` and `decompose` |
+| `src/bcpd/multivariate.py` | Multivariate marginal likelihood, shared changepoints |
+| `src/bcpd/detector.py` | High-level `detect` and `detect_multivariate` |
 | `tests/` | Reproduces the synthetic experiments of Chapter 5 |
 
 ## Differences from the R original
@@ -130,12 +135,49 @@ Cumulative sufficient statistics are precomputed, so a segment query costs O(q³
 independent of segment length. The remaining O(N²) Python loop in
 `SegmentLikelihood.segment_table` is the obvious next optimisation target.
 
-## Known approximation
+## Multiple series
 
-Eq. (4.4) specifies the model jointly over `X = [X_trend, X_seasonal]`, but `decompose`
-estimates the trend, detrends, and only then estimates the seasonal component. This is
-the thesis pipeline, retained as a reproduction baseline. The joint formulation is not
-yet implemented.
+`detect_multivariate` handles d series that share segment boundaries:
+
+    Y = X B + E,   rows of E iid N_d(0, Sigma)
+    B | Sigma ~ MN(0, nu I_q, Sigma),   Sigma ~ InverseWishart(Psi, nu0)
+
+The off-diagonal entries of `Sigma` carry the cross-series correlation, which is the
+reason to model the series jointly rather than d times separately. The recursion and
+backtrace are untouched: shared changepoints leave the segment structure exactly as it
+was, so only the segment likelihood changes.
+
+Two checks pin the derivation. At d = 1, with nu0 = 2 c1 and Psi = 2 c2, it reproduces
+the univariate likelihood to machine precision. For d > 1 it is compared against Monte
+Carlo over the inverse-Wishart prior, via the identity Y | Sigma ~ MN(0, I_n + nu X X',
+Sigma), which does not go through the step being tested.
+
+Note that `nu0` cannot be made arbitrarily vague the way `c1` could: an inverse-Wishart
+needs nu0 > d - 1 to be proper and nu0 > d + 1 for its mean to exist, so the dimension
+sets a floor. `MVPriorSpec.vague_for` takes nu0 = d + 2 and scales Psi by the mean
+marginal variance.
+
+## No decomposition
+
+The thesis fits the trend, detrends, then fits the seasonal component on the residual.
+That has been removed in favour of one joint design, `joint_design`, and a single
+changepoint set.
+
+The staged version was always an approximation — Eq. (4.4) specifies the model jointly —
+and it treats the detrended series as data when it is really an estimate carrying its own
+uncertainty, so seasonal changepoint probabilities came out overconfident. It also does
+not survive the move to multiple series: detrending each series separately presupposes
+series-specific trend changepoints, contradicting a shared-changepoint model.
+
+Chapter 6 already reported that trend changepoints dominantly determined the locations in
+every dataset tried, which is the same conclusion from the other direction.
+
+The cost is that a changepoint marks a change of regime rather than carrying a trend or
+seasonal label. That label is recoverable after the fact from `posterior_B`: compare the
+coefficient blocks either side of a boundary and see whether the slope moved, the Fourier
+terms moved, or both. The remaining limitation is that if trend and seasonality genuinely
+break at different times, one changepoint set must either place breaks at both or split
+the difference.
 
 ## References
 

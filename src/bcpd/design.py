@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["trend_design", "seasonal_design"]
+__all__ = ["trend_design", "seasonal_design", "joint_design", "harmonic_nested_sizes"]
 
 
 def trend_design(n: int) -> np.ndarray:
@@ -40,3 +40,40 @@ def seasonal_design(n: int, period: float, harmonic_order: int) -> np.ndarray:
         cols.append(np.sin(angle))
         cols.append(np.cos(angle))
     return np.column_stack(cols)
+
+
+def joint_design(n: int, period: float, harmonic_order: int) -> np.ndarray:
+    """Trend and seasonal terms as one design matrix.
+
+    Columns are ``[1, t, sin(2 pi t/P), cos(2 pi t/P), ...]``: the two trend
+    columns first, then ``harmonic_order`` sin/cos pairs.  Shape (n, 2 + 2L).
+
+    This replaces the thesis pipeline of fitting the trend, detrending, and
+    then fitting the seasonal component on the residual.  That staging was
+    always an approximation -- Eq. (4.4) specifies the model jointly -- and it
+    does not survive the move to multiple series, since detrending each series
+    separately presupposes series-specific trend changepoints and so
+    contradicts a shared-changepoint model.  Estimating one joint design keeps
+    the model coherent and propagates uncertainty correctly.
+
+    The cost is that a changepoint now marks a change of regime rather than
+    being labelled trend or seasonal.  That label is recoverable after the fact
+    by comparing posterior coefficient blocks either side of a boundary: a
+    moved slope is a trend break, moved Fourier terms a seasonal one.
+    """
+    if harmonic_order < 0:
+        raise ValueError("harmonic_order must be >= 0")
+    parts = [trend_design(n)]
+    if harmonic_order > 0:
+        parts.append(seasonal_design(n, period, harmonic_order))
+    return np.column_stack(parts)
+
+
+def harmonic_nested_sizes(harmonic_order: int) -> tuple[int, ...]:
+    """Nested column counts for ``joint_design``, for a prior on L.
+
+    Returns ``(2, 4, ..., 2 + 2 * harmonic_order)``: trend only, trend plus one
+    harmonic, and so on.  The leading entry lets a segment carry no seasonal
+    component at all.
+    """
+    return tuple(2 + 2 * l for l in range(harmonic_order + 1))
