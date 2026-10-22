@@ -217,15 +217,87 @@ class SegmentLikelihood:
         A = XtX[:q, :q] + np.eye(q) / self.prior.nu
         return np.linalg.solve(A, Xty[:q])
 
+    def _log_marginal_row(self, start: int, stops: np.ndarray, q: int) -> np.ndarray:
+        """Segment likelihood for every ``y[start:stop]`` at once.
+
+        Same expression as ``_log_marginal_at_size``, evaluated for a whole row
+        of the segment table in batched array operations rather than one call
+        per segment.  numpy's ``slogdet`` and ``solve`` both accept stacked
+        matrices, so the q x q work for every stop happens in one dispatch; for
+        small q the per-call overhead dominates the arithmetic, so this is worth
+        far more than the flop count suggests.
+        """
+        p = self.prior
+        n = stops - start  # segment lengths
+
+        XtX = self._XtX[stops] - self._XtX[start]
+        Xty = self._Xty[stops] - self._Xty[start]
+        yty = self._yty[stops] - self._yty[start]
+
+        XtX = XtX[:, :q, :q]
+        Xty = Xty[:, :q]
+
+        A = XtX + np.eye(q) / p.nu
+        sign, logdet = np.linalg.slogdet(A)
+        if np.any(sign <= 0):
+            raise np.linalg.LinAlgError("non-positive-definite Gram matrix")
+
+        beta = np.linalg.solve(A, Xty[..., None])[..., 0]
+        S = np.maximum(yty - np.einsum("ij,ij->i", Xty, beta), 0.0)
+
+        shape = p.c1 + n / 2.0
+        scale = p.c2 + 0.5 * S
+        return (
+            -0.5 * n * np.log(2.0 * np.pi)
+            - 0.5 * q * np.log(p.nu)
+            - 0.5 * logdet
+            + self._log_const
+            + gammaln(shape)
+            - shape * np.log(scale)
+        )
+
     def segment_table(self, min_length: int) -> np.ndarray:
         """Log marginal likelihood of every admissible segment.
 
         Returns an (N, N) array ``P`` with ``P[i, j]`` the log marginal
-        likelihood of ``y[i : j + 1]``, and -inf where the segment is shorter
-        than ``min_length``.  This is the initialisation step of the recursion.
+        likelihood of ``y[i : j + 1]``, and -inf where the segment cannot appear
+        in any admissible segmentation.
+
+        Two things keep this affordable.  Each row is evaluated in one batched
+        call rather than one call per segment.  And segments no segmentation
+        could contain are skipped: a segment starting after 0 must have a whole
+        segment before it, so its start is either 0 or at least ``min_length``;
+        one ending before the last index must leave a whole segment after it.
+
+        Note that neither bound can be tightened using ``k_max``.  Segments may
+        be arbitrarily longer than ``min_length``, so a handful of long segments
+        can place a start index anywhere, and a small number of changepoints
+        does not restrict where a given segment may sit.
         """
-        P = np.full((self.N, self.N), -np.inf)
-        for i in range(self.N):
-            for j in range(i + min_length - 1, self.N):
-                P[i, j] = self.log_marginal(i, j + 1)
+        N = self.N
+        P = np.full((N, N), -np.inf)
+
+        last_start = N - min_length
+
+        for i in range(N):
+            if i != 0 and (i < min_length or i > last_start):
+                continue
+            first_stop = i + min_length
+            if first_stop > N:
+                continue
+            stops = np.arange(first_stop, N + 1)
+            # A segment must either run to the end or leave room for another.
+            stops = stops[(stops == N) | (stops <= N - min_length)]
+            if stops.size == 0:
+                continue
+
+            if len(self.nested_sizes) == 1:
+                vals = self._log_marginal_row(i, stops, self.nested_sizes[0])
+            else:
+                per = np.stack(
+                    [self._log_marginal_row(i, stops, q) for q in self.nested_sizes]
+                )
+                vals = logsumexp(per, axis=0) + self._log_prior_size
+            P[i, stops - 1] = vals
+
         return P

@@ -15,6 +15,8 @@ dependencies = ["numpy>=1.24", "scipy>=1.10"]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.4", "matplotlib>=3.7", "ruff>=0.4"]
+bench = ["ruptures>=1.1", "prophet>=1.1", "pandas>=2.0"]
+notebook = ["plotly>=5.18", "jupyter>=1.0", "nbformat>=5.9"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/bcpd"]

@@ -244,6 +244,49 @@ simply lost — and can drop a particle that later matters.
 Set `max_particles=None` to run exactly, which is worth doing on short series to
 measure what the approximation costs.
 
+## Benchmark notebook
+
+`notebooks/benchmark.ipynb` runs both algorithms across the Turing Change Point
+Dataset — 37 real series, each annotated by several people — scores them with the
+covering and F1 metrics from the TCPD paper, and plots the results with Plotly.
+
+```bash
+pip install -e ".[dev,bench,notebook]"
+jupyter notebook notebooks/benchmark.ipynb
+```
+
+It downloads TCPD on first run, uses a local checkout if you point `TCPD_PATH` at
+one, and falls back to synthetic series with known changepoints if neither is
+available, so it always runs. It is also the quickest way to learn the API: each
+cell is a small complete example.
+
+Every series is run with one setting — `min_distance = n/25`, `k_max = 8`,
+`constant_design`, standardised input — rather than tuned individually, which is
+the honest way to report a benchmark.
+
+## How it compares
+
+`benchmarks/compare.py` runs bcpd against a vectorised Adams & MacKay BOCPD
+implementation included in the script, plus ruptures and Prophet if you have
+them.
+
+On a 1600-point series the online filter is roughly 40x slower than that BOCPD.
+Both are O(N x particles), so the gap is entirely constant factors: BOCPD
+updates sufficient statistics in O(1) per run length with pure array operations,
+while bcpd solves a q x q system per particle inside a Python loop. That is
+wasted work when q = 1, and vectorising the segment loop is the obvious fix.
+
+What the cost buys is generality and a different output. bcpd takes an arbitrary
+design matrix, so the same code covers changes in level, trend, seasonal
+amplitude or regression coefficients, and extends to correlated multivariate
+series. And only the offline algorithm reports a posterior over *how many*
+changepoints there are. Prophet in particular is not solving this problem: it
+fits a MAP trend with kinks on a fixed candidate grid and quantifies no
+uncertainty about changepoints at all.
+
+Detection accuracy is comparable across all of them on clean data, so runtime
+should be read alongside what each method actually returns.
+
 ## Validation
 
 The segment marginal likelihood is checked against numerical integration of both

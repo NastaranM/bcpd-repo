@@ -248,9 +248,23 @@ class MultivariateSegmentLikelihood:
         return np.linalg.solve(Lam_n, XtY[:q, :])
 
     def segment_table(self, min_length: int) -> np.ndarray:
-        """Log marginal likelihood of every admissible segment, (N, N)."""
-        P = np.full((self.N, self.N), -np.inf)
-        for i in range(self.N):
-            for j in range(i + min_length - 1, self.N):
-                P[i, j] = self.log_marginal(i, j + 1)
+        """Log marginal likelihood of every admissible segment, (N, N).
+
+        Skips segments that no admissible segmentation could contain, as in the
+        univariate case.  Not batched across stops: the d x d determinant makes
+        each call heavy enough relative to dispatch overhead that the gain is
+        small.
+        """
+        N = self.N
+        P = np.full((N, N), -np.inf)
+        last_start = N - min_length
+
+        for i in range(N):
+            if i != 0 and (i < min_length or i > last_start):
+                continue
+            for j in range(i + min_length - 1, N):
+                stop = j + 1
+                if stop != N and stop > N - min_length:
+                    continue
+                P[i, j] = self.log_marginal(i, stop)
         return P
